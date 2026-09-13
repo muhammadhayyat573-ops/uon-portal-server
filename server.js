@@ -1,64 +1,95 @@
 /* =========================================================
-   UON Portal — Sync Server
-   Node.js + Express + JSON file storage (no native deps)
+   UON Portal — Sync Server (Turso cloud database)
    ========================================================= */
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
+const { createClient } = require('@libsql/client');
 
 const PORT = process.env.PORT || 8080;
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'uon.db.json');
-const SESS_PATH = path.join(path.dirname(DB_PATH), 'uon-sessions.json');
+const TURSO_URL = process.env.TURSO_URL || 'libsql://uon-portals-hayyat.aws-ap-south-1.turso.io';
+const TURSO_TOKEN = process.env.TURSO_TOKEN || 'eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODkzMTk1NjksImlkIjoiMDFhMDliYzEtMzAwMS03YmViLTkxMWUtYmIyNmQxYjQ3ZDE0Iiwia2lkIjoieXdJa1VRSlVBQzFxcnJYYkxpbzlMd1g5ZWhkRFh0MkpsQzZSc2hITndNRSIsInJpZCI6IjA3NzVlMTBjLTg0NTUtNGJhYy1hOGVhLTJjOTA1MjA2MzM2MyJ9.pseAjHiqXGML6qWlm6EePOHtqy37DhlkjgCxRRt1UtmrfuROSQ_z82XjQkXD_EGqSTjIuR2088wVx7ApzTSYCQ';
 
-/* ---------- Simple JSON store ---------- */
-function readJson(file, fallback){
-  try {
-    if(!fs.existsSync(file)) return fallback;
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch(e){
-    console.error('read error', file, e.message);
-    return fallback;
+const turso = createClient({ url: TURSO_URL, authToken: TURSO_TOKEN });
+
+/* ---------- Init tables ---------- */
+async function initTables(){
+  await turso.execute(`
+    CREATE TABLE IF NOT EXISTS kv (
+      k TEXT PRIMARY KEY,
+      v TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `);
+  await turso.execute(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      role TEXT NOT NULL,
+      user_id TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `);
+}
+
+/* ---------- KV helpers ---------- */
+async function kvGet(k, fallback){
+  const res = await turso.execute({ sql: 'SELECT v FROM kv WHERE k = ?', args: [k] });
+  if(!res.rows || !res.rows.length) return fallback;
+  try { return JSON.parse(res.rows[0].v); } catch(e){ return fallback; }
+}
+async function kvSet(k, v){
+  await turso.execute({
+    sql: `INSERT INTO kv (k, v, updated_at) VALUES (?, ?, ?)
+          ON CONFLICT(k) DO UPDATE SET v = excluded.v, updated_at = excluded.updated_at`,
+    args: [k, JSON.stringify(v), Date.now()]
+  });
+}
+
+/* Cache DB in memory for speed, flush to Turso on every write */
+let DB = null;
+async function loadDb(){
+  DB = await kvGet('db', null);
+  if(!DB){
+    DB = require('./seed.json');
+    await kvSet('db', DB);
+    console.log('Database seeded');
   }
 }
-function writeJson(file, obj){
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(obj, null, 2));
-  } catch(e){
-    console.error('write error', file, e.message);
-  }
+async function saveDb(){
+  await kvSet('db', DB);
 }
 
-let DB = readJson(DB_PATH, null);
-if(!DB){
-  const seed = require('./seed.json');
-  DB = seed;
-  writeJson(DB_PATH, DB);
-  console.log('Database seeded with initial data');
+/* ---------- Sessions ---------- */
+async function createSession(token, role, userId){
+  await turso.execute({
+    sql: 'INSERT INTO sessions (token, role, user_id, created_at) VALUES (?, ?, ?, ?)',
+    args: [token, role, userId || '', Date.now()]
+  });
+}
+async function getSession(token){
+  const res = await turso.execute({
+    sql: 'SELECT role, user_id, created_at FROM sessions WHERE token = ?',
+    args: [token]
+  });
+  if(!res.rows || !res.rows.length) return null;
+  return { role: res.rows[0].role, user_id: res.rows[0].user_id };
+}
+async function deleteSession(token){
+  await turso.execute({ sql: 'DELETE FROM sessions WHERE token = ?', args: [token] });
 }
 
-let SESSIONS = readJson(SESS_PATH, {});
-function saveSessions(){ writeJson(SESS_PATH, SESSIONS); }
-
-function getDb(){ return DB; }
-function setDb(d){ DB = d; writeJson(DB_PATH, DB); }
-
-/* ---------- Express setup ---------- */
+/* ---------- Express ---------- */
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '8mb' }));
 
-function makeToken(){
-  return crypto.randomBytes(24).toString('hex');
-}
+function makeToken(){ return crypto.randomBytes(24).toString('hex'); }
 
 function authRequired(roles){
-  return (req, res, next) => {
+  return async (req, res, next) => {
     const token = req.headers['x-auth-token'];
     if(!token) return res.status(401).json({ ok:false, error:'No token' });
-    const sess = SESSIONS[token];
+    const sess = await getSession(token);
     if(!sess) return res.status(401).json({ ok:false, error:'Invalid session' });
     if(roles && roles.length && !roles.includes(sess.role)){
       return res.status(403).json({ ok:false, error:'Forbidden' });
@@ -69,11 +100,8 @@ function authRequired(roles){
 }
 
 function publicDbFor(role, userId){
-  const data = getDb();
-  const clone = JSON.parse(JSON.stringify(data));
-  if(clone.students){
-    clone.students.forEach(s => { delete s.pin; });
-  }
+  const clone = JSON.parse(JSON.stringify(DB));
+  if(clone.students) clone.students.forEach(s => { delete s.pin; });
   if(role === 'student'){
     clone.grades = (clone.grades || []).filter(g => g.studentId === userId);
     clone.tickets = (clone.tickets || []).filter(t => t.studentId === userId);
@@ -83,268 +111,222 @@ function publicDbFor(role, userId){
   return clone;
 }
 
-/* ---------- Health ---------- */
+/* ---------- Routes ---------- */
 app.get('/', (req, res) => {
   res.json({ ok:true, app:'UON Portal Server', v:1, ts: Date.now() });
 });
 
-/* ---------- Auth ---------- */
-app.post('/api/login', (req, res) => {
-  const { role, userId, pin } = req.body || {};
-  const data = getDb();
-
-  if(role === 'student'){
-    const st = (data.students || []).find(s => s.id === userId);
-    if(!st) return res.status(404).json({ ok:false, error:'Student not found' });
-    if(String(st.pin) !== String(pin)) return res.status(401).json({ ok:false, error:'Incorrect PIN' });
-    const token = makeToken();
-    SESSIONS[token] = { role:'student', user_id:userId, created_at: Date.now() };
-    saveSessions();
-    return res.json({ ok:true, token, role:'student', userId });
-  }
-
-  if(role === 'teacher' || role === 'admin'){
-    const serverPin = role === 'teacher'
-      ? String(data.teacherPin || '2222')
-      : String(data.adminPin || '3333');
-    if(String(pin) !== serverPin) return res.status(401).json({ ok:false, error:'Incorrect PIN' });
-    const token = makeToken();
-    SESSIONS[token] = { role, user_id:userId || '', created_at: Date.now() };
-    saveSessions();
-    return res.json({ ok:true, token, role });
-  }
-
-  res.status(400).json({ ok:false, error:'Invalid role' });
+app.post('/api/login', async (req, res) => {
+  try {
+    const { role, userId, pin } = req.body || {};
+    if(role === 'student'){
+      const st = (DB.students || []).find(s => s.id === userId);
+      if(!st) return res.status(404).json({ ok:false, error:'Student not found' });
+      if(String(st.pin) !== String(pin)) return res.status(401).json({ ok:false, error:'Incorrect PIN' });
+      const token = makeToken();
+      await createSession(token, 'student', userId);
+      return res.json({ ok:true, token, role:'student', userId });
+    }
+    if(role === 'teacher' || role === 'admin'){
+      const serverPin = role === 'teacher'
+        ? String(DB.teacherPin || '2222')
+        : String(DB.adminPin || '3333');
+      if(String(pin) !== serverPin) return res.status(401).json({ ok:false, error:'Incorrect PIN' });
+      const token = makeToken();
+      await createSession(token, role, userId || '');
+      return res.json({ ok:true, token, role });
+    }
+    res.status(400).json({ ok:false, error:'Invalid role' });
+  } catch(e){ res.status(500).json({ ok:false, error: e.message }); }
 });
 
-app.post('/api/logout', authRequired(), (req, res) => {
-  delete SESSIONS[req.headers['x-auth-token']];
-  saveSessions();
+app.post('/api/logout', authRequired(), async (req, res) => {
+  await deleteSession(req.headers['x-auth-token']);
   res.json({ ok:true });
 });
 
-/* ---------- Snapshot ---------- */
 app.get('/api/snapshot', authRequired(), (req, res) => {
-  const sess = req.session;
-  res.json({
-    ok: true,
-    data: publicDbFor(sess.role, sess.user_id),
-    ts: Date.now()
-  });
+  res.json({ ok:true, data: publicDbFor(req.session.role, req.session.user_id), ts: Date.now() });
 });
 
-/* ---------- Attendance (teacher) ---------- */
-app.post('/api/attendance', authRequired(['teacher','admin']), (req, res) => {
+app.post('/api/attendance', authRequired(['teacher','admin']), async (req, res) => {
   const { classId, studentId, date, status } = req.body || {};
   if(!classId || !studentId || !date || !status){
     return res.status(400).json({ ok:false, error:'Missing fields' });
   }
-  const data = getDb();
-  data.attendance = data.attendance || [];
-  const existing = data.attendance.find(a =>
+  DB.attendance = DB.attendance || [];
+  const existing = DB.attendance.find(a =>
     a.classId === classId && a.studentId === studentId && a.date === date
   );
-  if(existing){
-    existing.status = status;
-    existing.ts = Date.now();
-  } else {
-    data.attendance.push({
+  if(existing){ existing.status = status; existing.ts = Date.now(); }
+  else {
+    DB.attendance.push({
       id: 'a_' + Date.now().toString(36) + Math.random().toString(36).slice(2,7),
       classId, studentId, date, status, ts: Date.now(), photo: null
     });
   }
-  setDb(data);
-  res.json({ ok:true, ts: Date.now() });
+  await saveDb();
+  res.json({ ok:true });
 });
 
-/* ---------- Attendance (student self-mark) ---------- */
-app.post('/api/attendance/self', authRequired(['student']), (req, res) => {
+app.post('/api/attendance/self', authRequired(['student']), async (req, res) => {
   const { classId, photo } = req.body || {};
   if(!classId) return res.status(400).json({ ok:false, error:'Missing class' });
-  const sess = req.session;
-  const data = getDb();
-  data.attendance = data.attendance || [];
+  DB.attendance = DB.attendance || [];
   const date = new Date().toISOString().slice(0,10);
-  const existing = data.attendance.find(a =>
-    a.classId === classId && a.studentId === sess.user_id && a.date === date
+  const existing = DB.attendance.find(a =>
+    a.classId === classId && a.studentId === req.session.user_id && a.date === date
   );
   if(existing){
     existing.status = 'present';
     existing.photo = photo || existing.photo;
     existing.ts = Date.now();
   } else {
-    data.attendance.push({
+    DB.attendance.push({
       id: 'a_' + Date.now().toString(36) + Math.random().toString(36).slice(2,7),
-      classId, studentId: sess.user_id, date, status:'present',
+      classId, studentId: req.session.user_id, date, status:'present',
       ts: Date.now(), photo: photo || null
     });
   }
-  setDb(data);
+  await saveDb();
   res.json({ ok:true });
 });
 
-/* ---------- Grades ---------- */
-app.post('/api/grade', authRequired(['teacher','admin']), (req, res) => {
+app.post('/api/grade', authRequired(['teacher','admin']), async (req, res) => {
   const { studentId, classId, marks, total, credits } = req.body || {};
-  const data = getDb();
-  data.grades = data.grades || [];
-  const existing = data.grades.find(g => g.studentId === studentId && g.classId === classId);
+  DB.grades = DB.grades || [];
+  const existing = DB.grades.find(g => g.studentId === studentId && g.classId === classId);
   if(existing){
-    existing.marks = marks;
-    existing.total = total || 100;
+    existing.marks = marks; existing.total = total || 100;
     if(credits) existing.credits = credits;
   } else {
-    data.grades.push({
+    DB.grades.push({
       id:'g_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7),
       studentId, classId, marks, total: total || 100, credits: credits || 3
     });
   }
-  setDb(data);
+  await saveDb();
   res.json({ ok:true });
 });
 
-/* ---------- Tickets ---------- */
-app.post('/api/ticket', authRequired(['student']), (req, res) => {
+app.post('/api/ticket', authRequired(['student']), async (req, res) => {
   const { subject, body } = req.body || {};
   if(!subject || !body) return res.status(400).json({ ok:false, error:'Missing fields' });
-  const data = getDb();
-  data.tickets = data.tickets || [];
-  data.tickets.push({
+  DB.tickets = DB.tickets || [];
+  DB.tickets.push({
     id:'k_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7),
-    studentId: req.session.user_id,
-    subject, body,
-    status:'pending',
-    date: new Date().toISOString().slice(0,10),
-    reply:''
+    studentId: req.session.user_id, subject, body,
+    status:'pending', date: new Date().toISOString().slice(0,10), reply:''
   });
-  setDb(data);
+  await saveDb();
   res.json({ ok:true });
 });
 
-app.post('/api/ticket/resolve', authRequired(['admin']), (req, res) => {
+app.post('/api/ticket/resolve', authRequired(['admin']), async (req, res) => {
   const { ticketId, reply } = req.body || {};
-  const data = getDb();
-  const t = (data.tickets || []).find(x => x.id === ticketId);
+  const t = (DB.tickets || []).find(x => x.id === ticketId);
   if(!t) return res.status(404).json({ ok:false, error:'Not found' });
   t.status = 'resolved';
   t.reply = reply || 'Resolved by administration.';
-  setDb(data);
+  await saveDb();
   res.json({ ok:true });
 });
 
-/* ---------- Announcements ---------- */
-app.post('/api/announcement', authRequired(['admin']), (req, res) => {
+app.post('/api/announcement', authRequired(['admin']), async (req, res) => {
   const { title, body, audience, signature } = req.body || {};
   if(!title || !body) return res.status(400).json({ ok:false, error:'Missing fields' });
-  const data = getDb();
-  data.announcements = data.announcements || [];
-  data.announcements.push({
+  DB.announcements = DB.announcements || [];
+  DB.announcements.push({
     id:'n_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7),
     title, body, audience: audience || 'all',
     date: new Date().toISOString().slice(0,10),
-    author: 'Administration',
-    signature: signature || null
+    author: 'Administration', signature: signature || null
   });
-  setDb(data);
+  await saveDb();
   res.json({ ok:true });
 });
 
-app.delete('/api/announcement/:id', authRequired(['admin']), (req, res) => {
-  const data = getDb();
-  data.announcements = (data.announcements || []).filter(a => a.id !== req.params.id);
-  setDb(data);
+app.delete('/api/announcement/:id', authRequired(['admin']), async (req, res) => {
+  DB.announcements = (DB.announcements || []).filter(a => a.id !== req.params.id);
+  await saveDb();
   res.json({ ok:true });
 });
 
-/* ---------- Class notices ---------- */
-app.post('/api/notice', authRequired(['teacher','admin']), (req, res) => {
+app.post('/api/notice', authRequired(['teacher','admin']), async (req, res) => {
   const { classId, title, body, signature, signedBy } = req.body || {};
   if(!classId || !title || !body) return res.status(400).json({ ok:false, error:'Missing fields' });
-  const data = getDb();
-  data.notices = data.notices || [];
-  data.notices.push({
+  DB.notices = DB.notices || [];
+  DB.notices.push({
     id:'cn_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7),
     classId, title, body,
     date: new Date().toISOString().slice(0,10),
     teacherId: req.session.user_id,
-    signature: signature || null,
-    signedBy: signedBy || null
+    signature: signature || null, signedBy: signedBy || null
   });
-  setDb(data);
+  await saveDb();
   res.json({ ok:true });
 });
 
-/* ---------- Signatures ---------- */
-app.post('/api/signature', authRequired(['admin','teacher']), (req, res) => {
+app.post('/api/signature', authRequired(['admin','teacher']), async (req, res) => {
   const { target, data: sigData, name } = req.body || {};
-  const data = getDb();
-  data.signatures = data.signatures || {
+  DB.signatures = DB.signatures || {
     registrar:{data:null,name:'Registrar'},
     controller:{data:null,name:'Controller of Examinations'},
     admin:{data:null,name:''}
   };
   if(target === 'registrar' || target === 'controller' || target === 'admin'){
-    data.signatures[target] = { data: sigData, name: name || data.signatures[target].name };
+    DB.signatures[target] = { data: sigData, name: name || DB.signatures[target].name };
   } else if(target === 'teacher'){
-    const t = (data.teachers || []).find(x => x.id === req.session.user_id);
+    const t = (DB.teachers || []).find(x => x.id === req.session.user_id);
     if(t) t.signature = sigData;
   }
-  setDb(data);
+  await saveDb();
   res.json({ ok:true });
 });
 
-/* ---------- Admin CRUD ---------- */
-app.post('/api/students', authRequired(['admin']), (req, res) => {
-  const data = getDb();
-  data.students = data.students || [];
+app.post('/api/students', authRequired(['admin']), async (req, res) => {
+  DB.students = DB.students || [];
   const s = req.body;
   if(!s.id) s.id = 's_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
-  const idx = data.students.findIndex(x => x.id === s.id);
-  if(idx >= 0) data.students[idx] = Object.assign({}, data.students[idx], s);
-  else data.students.push(s);
-  setDb(data);
+  const idx = DB.students.findIndex(x => x.id === s.id);
+  if(idx >= 0) DB.students[idx] = Object.assign({}, DB.students[idx], s);
+  else DB.students.push(s);
+  await saveDb();
   res.json({ ok:true, id: s.id });
 });
 
-app.delete('/api/students/:id', authRequired(['admin']), (req, res) => {
-  const data = getDb();
-  data.students = (data.students || []).filter(s => s.id !== req.params.id);
-  data.attendance = (data.attendance || []).filter(a => a.studentId !== req.params.id);
-  data.grades = (data.grades || []).filter(g => g.studentId !== req.params.id);
-  setDb(data);
+app.delete('/api/students/:id', authRequired(['admin']), async (req, res) => {
+  DB.students = (DB.students || []).filter(s => s.id !== req.params.id);
+  DB.attendance = (DB.attendance || []).filter(a => a.studentId !== req.params.id);
+  DB.grades = (DB.grades || []).filter(g => g.studentId !== req.params.id);
+  await saveDb();
   res.json({ ok:true });
 });
 
-app.post('/api/classes', authRequired(['admin']), (req, res) => {
-  const data = getDb();
-  data.classes = data.classes || [];
+app.post('/api/classes', authRequired(['admin']), async (req, res) => {
+  DB.classes = DB.classes || [];
   const c = req.body;
   if(!c.id) c.id = 'c_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
-  const idx = data.classes.findIndex(x => x.id === c.id);
-  if(idx >= 0) data.classes[idx] = Object.assign({}, data.classes[idx], c);
-  else data.classes.push(c);
-  setDb(data);
+  const idx = DB.classes.findIndex(x => x.id === c.id);
+  if(idx >= 0) DB.classes[idx] = Object.assign({}, DB.classes[idx], c);
+  else DB.classes.push(c);
+  await saveDb();
   res.json({ ok:true, id: c.id });
 });
 
-app.delete('/api/classes/:id', authRequired(['admin']), (req, res) => {
-  const data = getDb();
-  data.classes = (data.classes || []).filter(c => c.id !== req.params.id);
-  setDb(data);
+app.delete('/api/classes/:id', authRequired(['admin']), async (req, res) => {
+  DB.classes = (DB.classes || []).filter(c => c.id !== req.params.id);
+  await saveDb();
   res.json({ ok:true });
 });
 
-/* ---------- Cleanup old sessions ---------- */
-setInterval(() => {
-  const cutoff = Date.now() - 30*24*60*60*1000;
-  let changed = false;
-  Object.keys(SESSIONS).forEach(tok => {
-    if(SESSIONS[tok].created_at < cutoff){ delete SESSIONS[tok]; changed = true; }
+/* ---------- Boot ---------- */
+initTables().then(loadDb).then(() => {
+  app.listen(PORT, () => {
+    console.log('UON Portal Server listening on port ' + PORT);
+    console.log('Connected to Turso: ' + TURSO_URL);
   });
-  if(changed) saveSessions();
-}, 60*60*1000);
-
-app.listen(PORT, () => {
-  console.log('UON Portal Server listening on port ' + PORT);
-  console.log('Storage file: ' + DB_PATH);
+}).catch(err => {
+  console.error('Boot failed:', err);
+  process.exit(1);
 });
