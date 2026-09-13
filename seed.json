@@ -1,0 +1,42 @@
+{
+  "students": [
+    {"id":"s1","roll":"UON-CS-2023-001","name":"Ahmed Raza","pin":"1111","dept":"CS","semester":4,"email":"ahmed.raza@uon.edu.pk","cnic":"35202-1234567-1","phone":"0300-1234567","address":"Model Town, Narowal","bloodGroup":"B+","enrolledOn":"2023-09-01","photo":null},
+    {"id":"s2","roll":"UON-CS-2023-002","name":"Fatima Noor","pin":"1111","dept":"CS","semester":4,"email":"fatima.noor@uon.edu.pk","cnic":"35202-2234567-2","phone":"0301-2345678","address":"Civil Lines, Narowal","bloodGroup":"O+","enrolledOn":"2023-09-01","photo":null},
+    {"id":"s3","roll":"UON-IT-2023-003","name":"Bilal Hussain","pin":"1111","dept":"IT","semester":4,"email":"bilal.hussain@uon.edu.pk","cnic":"35202-3234567-3","phone":"0302-3456789","address":"Zafarwal Road","bloodGroup":"A+","enrolledOn":"2023-09-01","photo":null},
+    {"id":"s4","roll":"UON-SE-2023-004","name":"Ayesha Siddiqua","pin":"1111","dept":"SE","semester":4,"email":"ayesha.s@uon.edu.pk","cnic":"35202-4234567-4","phone":"0303-4567890","address":"Shakargarh","bloodGroup":"AB+","enrolledOn":"2023-09-01","photo":null},
+    {"id":"s5","roll":"UON-CS-2023-005","name":"Muhammad Usman","pin":"1111","dept":"CS","semester":4,"email":"m.usman@uon.edu.pk","cnic":"35202-5234567-5","phone":"0304-5678901","address":"Narowal City","bloodGroup":"B-","enrolledOn":"2023-09-01","photo":null},
+    {"id":"s6","roll":"UON-IT-2023-006","name":"Hira Shahid","pin":"1111","dept":"IT","semester":4,"email":"hira.shahid@uon.edu.pk","cnic":"35202-6234567-6","phone":"0305-6789012","address":"Kot Nainan","bloodGroup":"O-","enrolledOn":"2023-09-01","photo":null},
+    {"id":"s7","roll":"UON-SE-2023-007","name":"Zainab Malik","pin":"1111","dept":"SE","semester":4,"email":"zainab.malik@uon.edu.pk","cnic":"35202-7234567-7","phone":"0306-7890123","address":"Baddomalhi","bloodGroup":"A-","enrolledOn":"2023-09-01","photo":null},
+    {"id":"s8","roll":"UON-CS-2023-008","name":"Hassan Ali","pin":"1111","dept":"CS","semester":4,"email":"hassan.ali@uon.edu.pk","cnic":"35202-8234567-8","phone":"0307-8901234","address":"Narowal","bloodGroup":"B+","enrolledOn":"2023-09-01","photo":null},
+    {"id":"s9","roll":"UON-IT-2023-009","name":"Maryam Tariq","pin":"1111","dept":"IT","semester":4,"email":"maryam.tariq@uon.edu.pk","cnic":"35202-9234567-9","phone":"0308-9012345","address":"Sialkot Road","bloodGroup":"O+","enrolledOn":"2023-09-01","photo":null},
+    {"id":"s10","roll":"UON-SE-2023-010","name":"Ali Hamza","pin":"1111","dept":"SE","semester":4,"email":"ali.hamza@uon.edu.pk","cnic":"35202-1034567-0","phone":"0309-0123456","address":"Daska Road","bloodGroup":"A+","enrolledOn":"2023-09-01","photo":null}
+  ],
+  "teachers": [
+    {"id":"t1","name":"Dr. Imran Khalid","dept":"CS","designation":"Assistant Professor","email":"imran.khalid@uon.edu.pk","phone":"0321-1111111","signature":null},
+    {"id":"t2","name":"Prof. Sana Javed","dept":"IT","designation":"Associate Professor","email":"sana.javed@uon.edu.pk","phone":"0321-2222222","signature":null},
+    {"id":"t3","name":"Dr. Nadeem Aslam","dept":"SE","designation":"Professor","email":"nadeem.aslam@uon.edu.pk","phone":"0321-3333333","signature":null}
+  ],
+  "classes": [
+    {"id":"c1","code":"CS-301","title":"Data Structures & Algorithms","dept":"CS","semester":4,"teacherId":"t1","day":"Mon","time":"09:00","credits":3,"room":"CS-Lab-2"},
+    {"id":"c2","code":"CS-302","title":"Operating Systems","dept":"CS","semester":4,"teacherId":"t1","day":"Wed","time":"11:00","credits":3,"room":"Hall-A"},
+    {"id":"c3","code":"IT-305","title":"Database Systems","dept":"IT","semester":4,"teacherId":"t2","day":"Tue","time":"10:00","credits":3,"room":"IT-Lab-1"},
+    {"id":"c4","code":"SE-310","title":"Software Engineering","dept":"SE","semester":4,"teacherId":"t3","day":"Thu","time":"09:30","credits":3,"room":"Hall-B"},
+    {"id":"c5","code":"IT-306","title":"Web Technologies","dept":"IT","semester":4,"teacherId":"t2","day":"Fri","time":"12:00","credits":2,"room":"IT-Lab-3"}
+  ],
+  "grades": [],
+  "attendance": [],
+  "fees": [],
+  "exams": [],
+  "notices": [],
+  "announcements": [
+    {"id":"n1","title":"Welcome to UON Portal","body":"The University of Narowal student administration portal is now live. Attendance, grades, and fee records are synced across all devices.","audience":"all","date":"2026-09-13","author":"Registrar Office","signature":null}
+  ],
+  "tickets": [],
+  "signatures": {
+    "registrar": {"data": null, "name": "Registrar"},
+    "controller": {"data": null, "name": "Controller of Examinations"},
+    "admin": {"data": null, "name": ""}
+  },
+  "teacherPin": "2222",
+  "adminPin": "3333"
+}
